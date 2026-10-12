@@ -235,6 +235,14 @@ test('T19 redirections refusées : option transmise, réponse 301 ignorée', fun
 	check(count($seen) === 5 && count(array_filter($seen, fn($v) => $v !== false)) === 0, 'allow_redirects : ' . json_encode($seen));
 });
 
+test('T20 extras/auto-external-lookup.html : aucune balise PHP (Grocy l\'inclut avec include)', function () {
+	$file = __DIR__ . '/../extras/auto-external-lookup.html';
+	check(is_file($file), 'fichier absent');
+	$content = file_get_contents($file);
+	check(!str_contains($content, '<?') && !str_contains($content, '?>'), 'balise PHP présente');
+	check(str_contains($content, 'add-new-product-plugin-dialog-button') && str_contains($content, "Nothing was found for the given barcode"), 'sélecteurs Grocy attendus absents');
+});
+
 $failed = 0;
 foreach ($tests as $name => $fn)
 {

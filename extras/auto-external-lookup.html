@@ -1,0 +1,70 @@
+<!--
+	grocy-multisource-barcode-lookup — extras/auto-external-lookup.html (optionnel)
+	Quand un code-barres scanné est inconnu, lance directement la recherche externe ;
+	si elle ne trouve rien, rouvre la fenêtre « Créer ou assigner à un produit » avec les choix habituels.
+	Installation : copier ce fichier en <GROCY_DATAPATH>/custom_js.html (Grocy l'inclut dans chaque page).
+	Testé avec Grocy 4.7.1 (public/viewjs/components/productpicker.js).
+-->
+<script>
+	(function ()
+	{
+		'use strict';
+		if (typeof $ === 'undefined' || typeof Grocy === 'undefined')
+		{
+			return;
+		}
+
+		var BARCODE = /^[0-9]{8,14}$/;
+		var tried = {};        // codes déjà recherchés automatiquement (une seule fois par code et par page)
+		var waitingFor = null; // code dont la recherche automatique est en cours
+
+		function productInput()
+		{
+			return $('#product_id_text_input');
+		}
+
+		// 1. La fenêtre « produit inconnu » apparaît : on appuie sur « E Lecture externe de codes-barres »
+		new MutationObserver(function ()
+		{
+			var button = $('.add-new-product-plugin-dialog-button').not('.d-none').first();
+			if (button.length === 0 || button.data('autoLookupHandled'))
+			{
+				return;
+			}
+			button.data('autoLookupHandled', true);
+
+			var code = (productInput().val() || '').toString().trim();
+			if (!BARCODE.test(code) || tried[code])
+			{
+				return; // nom de produit saisi, ou code déjà recherché : choix habituels
+			}
+			tried[code] = true;
+			waitingFor = code;
+			button.trigger('click');
+		}).observe(document.body, { childList: true, subtree: true });
+
+		// 2. La recherche externe n'a rien trouvé : on rouvre la fenêtre (sans relancer la recherche)
+		if (typeof toastr !== 'undefined' && typeof __t === 'function')
+		{
+			var originalWarning = toastr.warning;
+			toastr.warning = function (message)
+			{
+				var result = originalWarning.apply(this, arguments);
+				if (waitingFor !== null && message === __t('Nothing was found for the given barcode'))
+				{
+					var code = waitingFor;
+					waitingFor = null;
+					setTimeout(function ()
+					{
+						var picker = Grocy.Components.ProductPicker;
+						if (picker && !picker.PopupOpen && productInput().val() === code)
+						{
+							productInput().trigger('blur');
+						}
+					}, (Grocy.FormFocusDelay || 50) + 300);
+				}
+				return result;
+			};
+		}
+	})();
+</script>

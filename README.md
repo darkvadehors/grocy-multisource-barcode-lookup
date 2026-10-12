@@ -41,6 +41,10 @@ Requires Grocy 4.7 or later (PHP 8.5).
 
 To roll back, set the plugin back to `OpenFoodFactsBarcodeLookupPlugin`.
 
+### Optional: automatic external lookup
+
+By default Grocy asks what to do with an unknown barcode, and you have to tap **E – External barcode lookup**. `extras/auto-external-lookup.html` makes it automatic: when the unknown input looks like a barcode (8–14 digits), the external lookup starts right away; if nothing is found, the usual choices (new product, add barcode to an existing product…) are shown again, without searching a second time. Install it as `<GROCY_DATAPATH>/custom_js.html` (Grocy includes that file in every page; it survives Grocy updates). Remove the file to go back to the default behaviour. Tested with Grocy 4.7.1.
+
 Note: the external lookup runs when you scan in Grocy's web UI (e.g. Safari on iPhone). The *Grocy Mobile* iOS app only searches barcodes already stored in Grocy.
 
 ## Tests
@@ -70,4 +74,5 @@ Plugin de recherche de codes-barres pour [Grocy](https://grocy.info) qui interro
 - **Confidentialité** : chaque code-barres inconnu de votre Grocy est envoyé à jusqu'à 8 services tiers (UPCitemdb sans clé).
 - **Installation** : copier le fichier dans `<GROCY_DATAPATH>/plugins/`, puis `Setting('STOCK_BARCODE_LOOKUP_PLUGIN', 'MultiSourceBarcodeLookupPlugin');` dans `config.php`. Clés facultatives dans `<GROCY_DATAPATH>/lookup-keys.json` (modèle : `lookup-keys.example.json`), jamais journalisées.
 - **Tests** : `tests/fetch-grocy.sh && php tests/run.php`.
+- **Optionnel — recherche externe automatique** : copier `extras/auto-external-lookup.html` en `<GROCY_DATAPATH>/custom_js.html`. Un code-barres inconnu lance directement la recherche ; si rien n'est trouvé, les choix habituels réapparaissent. Supprimer le fichier pour revenir au comportement normal.
 - Les tables de composition (Ciqual, etc.) n'ont pas de code-barres et ne sont pas utilisées. L'app iOS Grocy Mobile n'utilise pas la recherche externe : scanner depuis l'interface web.
