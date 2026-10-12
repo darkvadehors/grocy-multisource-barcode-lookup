@@ -33,6 +33,7 @@ class MultiSourceBarcodeLookupPlugin extends BaseBarcodeLookupPlugin
 	private const TIMEOUT = 4;
 	private const BUDGET_SECONDS = 12;
 	private const MAX_NAME_LENGTH = 200;
+	private const MAX_RESPONSE_BYTES = 1048576;
 	private const MIN_REMAINING_SECONDS = 0.5;
 	// Images acceptées : uniquement celles des bases Open … Facts (Grocy les télécharge ensuite lui-même)
 	private const IMAGE_URL_PATTERN = '#^https://images\.open(?:food|beauty|petfood|products)facts\.org/[^?\#]*\.(?:jpe?g|png|webp|gif)$#i';
@@ -57,8 +58,10 @@ class MultiSourceBarcodeLookupPlugin extends BaseBarcodeLookupPlugin
 
 	protected function ExecuteLookup($barcode)
 	{
-		$code = preg_replace('/[^0-9]/', '', (string)$barcode);
-		if (strlen($code) < 8 || strlen($code) > 14)
+		// Uniquement 8 à 14 chiffres : Grocy réutilise le code tel quel (code-barres enregistré,
+		// nom du fichier image), on ne « nettoie » donc pas une entrée invalide, on la refuse
+		$code = trim((string)$barcode);
+		if (!preg_match('/^[0-9]{8,14}$/', $code))
 		{
 			return null;
 		}
@@ -95,7 +98,7 @@ class MultiSourceBarcodeLookupPlugin extends BaseBarcodeLookupPlugin
 			}
 		}
 
-		return $found === null ? null : $this->ToGrocyProduct($found, $barcode);
+		return $found === null ? null : $this->ToGrocyProduct($found, $code);
 	}
 
 	private function LookupOpenFacts(Client $client, string $code)
@@ -415,6 +418,15 @@ class MultiSourceBarcodeLookupPlugin extends BaseBarcodeLookupPlugin
 			// Pas de redirection : chaque saut repartirait avec son propre délai (budget dépassé)
 			// et pourrait mener ailleurs ; une source qui redirige est simplement ignorée
 			'allow_redirects' => false,
+			// Réponse annoncée trop volumineuse : abandon avant la lecture du corps (protection mémoire)
+			'on_headers' => function (ResponseInterface $response)
+			{
+				$length = $response->getHeaderLine('Content-Length');
+				if ($length !== '' && (int)$length > self::MAX_RESPONSE_BYTES)
+				{
+					throw new \RuntimeException("réponse trop volumineuse ($length octets)");
+				}
+			},
 			'headers' => ['User-Agent' => self::USER_AGENT]
 		];
 		if (self::$HttpHandler !== null)

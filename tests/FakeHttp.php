@@ -29,7 +29,20 @@ class FakeHttp
 			{
 				return Create::promiseFor(new Response(404, [], '{"status":0}'));
 			}
-			return Create::promiseFor($route instanceof Response ? $route : $route($request, $options));
+			$response = $route instanceof Response ? $route : $route($request, $options);
+			// Reproduit le gestionnaire curl : on_headers est appelé avant la lecture du corps
+			if (isset($options['on_headers']) && is_callable($options['on_headers']))
+			{
+				try
+				{
+					$options['on_headers']($response);
+				}
+				catch (\Throwable $ex)
+				{
+					return Create::rejectionFor(new \GuzzleHttp\Exception\RequestException($ex->getMessage(), $request, null, $ex));
+				}
+			}
+			return Create::promiseFor($response);
 		};
 	}
 }

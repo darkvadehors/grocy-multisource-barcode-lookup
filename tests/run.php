@@ -133,7 +133,7 @@ test('T8 aucune source ne trouve : null', function () {
 });
 
 test('T9 code-barres invalide : null, aucune requête', function () {
-	foreach (['abc', '12345', '123456789012345'] as $code) {
+	foreach (['abc', '12345', '123456789012345', 'abc3017620422003', '3017620422003<x>', "30176204\x0022003"] as $code) {
 		$http = new FakeHttp();
 		check(plugin($http)->Lookup($code) === null && $http->Calls === [], "code $code");
 	}
@@ -241,6 +241,16 @@ test('T20 extras/auto-external-lookup.html : aucune balise PHP (Grocy l\'inclut 
 	$content = file_get_contents($file);
 	check(!str_contains($content, '<?') && !str_contains($content, '?>'), 'balise PHP présente');
 	check(str_contains($content, 'add-new-product-plugin-dialog-button') && str_contains($content, "Nothing was found for the given barcode"), 'sélecteurs Grocy attendus absents');
+});
+
+test('T21 réponse annoncée trop volumineuse (> 1 Mo) : source ignorée', function () {
+	global $logs;
+	$http = new FakeHttp();
+	$http->Routes[OFF] = new Response(200, ['Content-Length' => (string)(5 * 1024 * 1024)], json_encode(['status' => 1, 'product' => ['product_name' => 'Énorme']]));
+	$http->Routes[OBF] = offFound(['product_name' => 'Normal']);
+	$r = plugin($http)->Lookup('3000000000021');
+	check($r['name'] === 'Normal', 'réponse volumineuse acceptée : ' . $r['name']);
+	check(count(array_filter($logs, fn($l) => str_contains($l, 'Open Food Facts'))) === 1, 'refus non journalisé');
 });
 
 $failed = 0;
