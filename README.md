@@ -12,12 +12,12 @@ A [Grocy](https://grocy.info) barcode lookup plugin that queries **8 free produc
 | 2 | [Open Beauty Facts](https://world.openbeautyfacts.org) | cosmetics, hygiene | — | fair use |
 | 3 | [Open Pet Food Facts](https://world.openpetfoodfacts.org) | pet food | — | fair use |
 | 4 | [Open Products Facts](https://world.openproductsfacts.org) | household & other products | — | fair use |
-| 5 | [Open EAN / GTIN Database](https://opengtindb.org) | general (mostly Germany) | `opengtindb_queryid` (on request) | see provider |
+| 5 | [Open EAN / GTIN Database](https://opengtindb.org) | general (mostly Germany) | `opengtindb_queryid` — private use requires a donation of at least €35, then an e-mail request ([details](https://opengtindb.org/userid.php)) | 500 req/day |
 | 6 | [UPCDatabase.org](https://upcdatabase.org) | general | `upcdatabase_key` (free sign-up) | see provider |
 | 7 | [USDA FoodData Central](https://fdc.nal.usda.gov) — Branded Foods | US products | `usda_fdc_key` ([api.data.gov](https://api.data.gov/signup)) | 1,000 req/hour |
 | 8 | [UPCitemdb](https://www.upcitemdb.com) (trial endpoint) | general | — | 100 req/day, 6/min |
 
-Sources 1–4 are queried **in parallel**; if none finds the product, sources 5–8 are queried **one after the other** and the search stops at the first hit (to save quotas). Sources without a configured key are skipped. Each request gets at most 3 s to connect and 4 s in total, never more than the time left in the 12 s budget (so a lookup ends after roughly 12 s at worst); redirects are not followed. A failing, slow, redirecting or rate-limited source is skipped — the plugin never throws because of a source.
+Sources 1–4 are queried **in parallel**; if none finds the product, sources 5–8 are queried **one after the other** and the search stops at the first hit (to save quotas). Sources without a configured key are skipped (so Open EAN is simply unused unless you obtain a query ID). Each request gets at most 3 s to connect and 4 s in total, never more than the time left in the 12 s budget (so a lookup ends after roughly 12 s at worst); redirects are not followed. A failing, slow, redirecting or rate-limited source is skipped — the plugin never throws because of a source.
 
 Food composition tables (Ciqual, CoFID, BLS, …) have no barcodes and cannot identify a scanned product, so they are not used here.
 
