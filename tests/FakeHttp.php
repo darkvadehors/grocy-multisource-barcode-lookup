@@ -29,7 +29,7 @@ class FakeHttp
 			{
 				return Create::promiseFor(new Response(404, [], '{"status":0}'));
 			}
-			return Create::promiseFor($route instanceof Response ? $route : $route($request));
+			return Create::promiseFor($route instanceof Response ? $route : $route($request, $options));
 		};
 	}
 }

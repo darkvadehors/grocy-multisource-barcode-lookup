@@ -26,12 +26,16 @@ class MultiSourceBarcodeLookupPlugin extends BaseBarcodeLookupPlugin
 	public static $HttpHandler = null;
 	public static $KeysFile = null;
 	public static $Logger = null;
+	public static $Clock = null;
 
 	private const USER_AGENT = 'GrocyMultiSourceLookup/1.0 (+https://github.com/darkvadehors/grocy-multisource-barcode-lookup)';
 	private const CONNECT_TIMEOUT = 3;
 	private const TIMEOUT = 4;
 	private const BUDGET_SECONDS = 12;
 	private const MAX_NAME_LENGTH = 200;
+	private const MIN_REMAINING_SECONDS = 0.5;
+	// Images acceptées : uniquement celles des bases Open … Facts (Grocy les télécharge ensuite lui-même)
+	private const IMAGE_URL_PATTERN = '#^https://images\.open(?:food|beauty|petfood|products)facts\.org/[^?\#]*\.(?:jpe?g|png|webp|gif)$#i';
 	private const KEY_NAMES = ['opengtindb_queryid', 'upcdatabase_key', 'usda_fdc_key'];
 
 	private const OPEN_FACTS_SOURCES = [
@@ -49,6 +53,7 @@ class MultiSourceBarcodeLookupPlugin extends BaseBarcodeLookupPlugin
 	];
 
 	private $Keys = [];
+	private $Remaining = self::TIMEOUT;
 
 	protected function ExecuteLookup($barcode)
 	{
@@ -60,14 +65,16 @@ class MultiSourceBarcodeLookupPlugin extends BaseBarcodeLookupPlugin
 
 		$this->Keys = $this->LoadKeys();
 		$client = $this->CreateClient();
-		$deadline = microtime(true) + self::BUDGET_SECONDS;
+		$deadline = $this->Now() + self::BUDGET_SECONDS;
 
 		$found = $this->LookupOpenFacts($client, $code);
 		if ($found === null)
 		{
 			foreach (self::SEQUENTIAL_SOURCES as $source => $method)
 			{
-				if (microtime(true) >= $deadline)
+				// Chaque requête est bornée par le temps restant : le budget global est un plafond réel
+				$this->Remaining = $deadline - $this->Now();
+				if ($this->Remaining < self::MIN_REMAINING_SECONDS)
 				{
 					$this->Log('budget', 'budget de temps épuisé, sources restantes ignorées');
 					break;
@@ -94,7 +101,7 @@ class MultiSourceBarcodeLookupPlugin extends BaseBarcodeLookupPlugin
 	private function LookupOpenFacts(Client $client, string $code)
 	{
 		$lang = $this->Language();
-		$fields = implode(',', ['product_name', "product_name_$lang", 'generic_name', "generic_name_$lang", 'brands', 'image_front_url', 'image_url']);
+		$fields = implode(',', ['product_name', "product_name_$lang", 'generic_name', "generic_name_$lang", 'brands', 'quantity', 'image_front_url', 'image_url']);
 
 		$promises = [];
 		foreach (self::OPEN_FACTS_SOURCES as $source => $baseUrl)
@@ -128,7 +135,8 @@ class MultiSourceBarcodeLookupPlugin extends BaseBarcodeLookupPlugin
 				'source' => $source,
 				'name' => $name,
 				'brand' => $this->FirstBrand($product['brands'] ?? null),
-				'image' => $this->FirstString([$product['image_front_url'] ?? null, $product['image_url'] ?? null])
+				'quantity' => $this->FirstString([$product['quantity'] ?? null]),
+				'image' => $this->FirstImage([$product['image_front_url'] ?? null, $product['image_url'] ?? null])
 			];
 		}
 		return null;
@@ -141,7 +149,7 @@ class MultiSourceBarcodeLookupPlugin extends BaseBarcodeLookupPlugin
 		{
 			return null;
 		}
-		$response = $client->get('https://opengtindb.org/', ['query' => ['ean' => str_pad($code, 13, '0', STR_PAD_LEFT), 'cmd' => 'query', 'queryid' => $queryId]]);
+		$response = $client->get('https://opengtindb.org/', ['query' => ['ean' => str_pad($code, 13, '0', STR_PAD_LEFT), 'cmd' => 'query', 'queryid' => $queryId]] + $this->Limits());
 		if ($response->getStatusCode() != 200)
 		{
 			$this->Log('Open EAN / GTIN Database', 'HTTP ' . $response->getStatusCode());
@@ -191,14 +199,14 @@ class MultiSourceBarcodeLookupPlugin extends BaseBarcodeLookupPlugin
 		{
 			return null;
 		}
-		$data = $this->DecodeJson('UPCDatabase.org', $client->get("https://api.upcdatabase.org/product/$code", ['query' => ['apikey' => $key]]), [404]);
+		$data = $this->DecodeJson('UPCDatabase.org', $client->get("https://api.upcdatabase.org/product/$code", ['query' => ['apikey' => $key]] + $this->Limits()), [404]);
 		if ($data === null || (array_key_exists('success', $data) && $data['success'] === false))
 		{
 			return null;
 		}
 		$name = $this->FirstString([$data['title'] ?? null, $data['description'] ?? null]);
-		$images = is_array($data['images'] ?? null) ? array_values($data['images']) : [];
-		return $name === null ? null : ['source' => 'UPCDatabase.org', 'name' => $name, 'brand' => $this->FirstBrand($data['brand'] ?? null), 'image' => $this->FirstString($images)];
+		// Images de sources tierces ignorées : URL arbitraires que Grocy téléchargerait sans contrôle
+		return $name === null ? null : ['source' => 'UPCDatabase.org', 'name' => $name, 'brand' => $this->FirstBrand($data['brand'] ?? null), 'image' => null];
 	}
 
 	private function LookupUsda(Client $client, string $code)
@@ -208,7 +216,7 @@ class MultiSourceBarcodeLookupPlugin extends BaseBarcodeLookupPlugin
 		{
 			return null;
 		}
-		$data = $this->DecodeJson('USDA FoodData Central', $client->get('https://api.nal.usda.gov/fdc/v1/foods/search', ['query' => ['api_key' => $key, 'dataType' => 'Branded', 'query' => $code, 'pageSize' => 10]]), []);
+		$data = $this->DecodeJson('USDA FoodData Central', $client->get('https://api.nal.usda.gov/fdc/v1/foods/search', ['query' => ['api_key' => $key, 'dataType' => 'Branded', 'query' => $code, 'pageSize' => 10]] + $this->Limits()), []);
 		if ($data === null || !is_array($data['foods'] ?? null))
 		{
 			return null;
@@ -232,15 +240,14 @@ class MultiSourceBarcodeLookupPlugin extends BaseBarcodeLookupPlugin
 
 	private function LookupUpcItemDb(Client $client, string $code)
 	{
-		$data = $this->DecodeJson('UPCitemdb', $client->get('https://api.upcitemdb.com/prod/trial/lookup', ['query' => ['upc' => $code]]), [400, 404]);
+		$data = $this->DecodeJson('UPCitemdb', $client->get('https://api.upcitemdb.com/prod/trial/lookup', ['query' => ['upc' => $code]] + $this->Limits()), [400, 404]);
 		if ($data === null || ($data['code'] ?? '') !== 'OK' || !is_array($data['items'][0] ?? null))
 		{
 			return null;
 		}
 		$item = $data['items'][0];
 		$name = $this->FirstString([$item['title'] ?? null]);
-		$images = is_array($item['images'] ?? null) ? array_values($item['images']) : [];
-		return $name === null ? null : ['source' => 'UPCitemdb', 'name' => $name, 'brand' => $this->FirstBrand($item['brand'] ?? null), 'image' => $this->FirstString($images)];
+		return $name === null ? null : ['source' => 'UPCitemdb', 'name' => $name, 'brand' => $this->FirstBrand($item['brand'] ?? null), 'image' => null];
 	}
 
 	private function ToGrocyProduct(array $found, $barcode)
@@ -257,14 +264,10 @@ class MultiSourceBarcodeLookupPlugin extends BaseBarcodeLookupPlugin
 			$quId = $this->UserSettings['product_presets_qu_id'];
 		}
 
-		$image = $found['image'] ?? null;
-		if (!is_string($image) || !preg_match('#^https://#i', $image))
-		{
-			$image = '';
-		}
+		$image = $this->FirstImage([$found['image'] ?? null]) ?? '';
 
 		return [
-			'name' => $this->BuildName($found['name'], $found['brand'] ?? null),
+			'name' => $this->BuildName($found['name'], $found['brand'] ?? null, $found['quantity'] ?? null),
 			'location_id' => $locationId,
 			'qu_id_purchase' => $quId,
 			'qu_id_stock' => $quId,
@@ -275,13 +278,41 @@ class MultiSourceBarcodeLookupPlugin extends BaseBarcodeLookupPlugin
 		];
 	}
 
-	private function BuildName(string $name, ?string $brand)
+	// Grocy refuse deux produits de même nom : marque et contenance distinguent les variantes
+	private function BuildName(string $name, ?string $brand, ?string $quantity)
 	{
-		if ($brand !== null && !str_contains($this->Fold($name), $this->Fold($brand)))
+		$folded = $this->Fold($name);
+		if ($brand !== null && !str_contains($folded, $this->Fold($brand)))
 		{
 			$name = "$name ($brand)";
 		}
+		if ($quantity !== null && mb_strlen($quantity) <= 30 && !str_contains($folded, $this->Fold($quantity)))
+		{
+			$name = "$name $quantity";
+		}
 		return mb_substr($name, 0, self::MAX_NAME_LENGTH);
+	}
+
+	private function FirstImage(array $candidates)
+	{
+		foreach ($candidates as $candidate)
+		{
+			if (is_string($candidate) && preg_match(self::IMAGE_URL_PATTERN, $candidate))
+			{
+				return $candidate;
+			}
+		}
+		return null;
+	}
+
+	private function Limits()
+	{
+		return ['timeout' => min(self::TIMEOUT, $this->Remaining), 'connect_timeout' => min(self::CONNECT_TIMEOUT, $this->Remaining)];
+	}
+
+	private function Now()
+	{
+		return is_callable(self::$Clock) ? (self::$Clock)() : microtime(true);
 	}
 
 	private function DecodeJson(string $source, ResponseInterface $response, array $silentStatuses)
@@ -381,6 +412,9 @@ class MultiSourceBarcodeLookupPlugin extends BaseBarcodeLookupPlugin
 			'http_errors' => false,
 			'connect_timeout' => self::CONNECT_TIMEOUT,
 			'timeout' => self::TIMEOUT,
+			// Pas de redirection : chaque saut repartirait avec son propre délai (budget dépassé)
+			// et pourrait mener ailleurs ; une source qui redirige est simplement ignorée
+			'allow_redirects' => false,
 			'headers' => ['User-Agent' => self::USER_AGENT]
 		];
 		if (self::$HttpHandler !== null)

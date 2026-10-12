@@ -13,10 +13,11 @@ const GTIN = 'opengtindb.org';
 const UPCDB = 'api.upcdatabase.org';
 const USDA = 'api.nal.usda.gov';
 const UPCITEM = 'api.upcitemdb.com';
-const ALL_KEYS = ['opengtindb_queryid' => 'QID-SECRET-1', 'upcdatabase_key' => 'UPC-SECRET-2', 'usda_fdc_key' => 'USDA-SECRET-3'];
+const ALL_KEYS = ['opengtindb_queryid' => 'QID+SECRET/1=', 'upcdatabase_key' => 'UPC SECRET&2', 'usda_fdc_key' => 'USDA-SECRET-3'];
 
 $tests = [];
 $logs = [];
+$clock = 0.0;
 
 function test(string $name, callable $fn): void { global $tests; $tests[$name] = $fn; }
 function check(bool $condition, string $message): void { if (!$condition) { throw new Exception($message); } }
@@ -32,6 +33,7 @@ function plugin(FakeHttp $http, array $keys = [], array $settings = []): MultiSo
 	file_put_contents($keysFile, json_encode($keys));
 	MultiSourceBarcodeLookupPlugin::$KeysFile = $keysFile;
 	MultiSourceBarcodeLookupPlugin::$Logger = function (string $message) { global $logs; $logs[] = $message; };
+	MultiSourceBarcodeLookupPlugin::$Clock = null;
 	$locations = [(object)['id' => 1], (object)['id' => 5]];
 	$quantityUnits = [(object)['id' => 2], (object)['id' => 7]];
 	$userSettings = array_merge(['product_presets_location_id' => -1, 'product_presets_qu_id' => -1], $settings);
@@ -85,7 +87,7 @@ test('T5 sans clés : sources à clé non appelées, UPCitemdb appelée', functi
 	$http = new FakeHttp();
 	$http->Routes[UPCITEM] = json(['code' => 'OK', 'items' => [['title' => 'Stylo Bille', 'brand' => 'Bic', 'images' => ['https://img/s.jpg']]]]);
 	$r = plugin($http)->Lookup('3000000000004');
-	check($r['name'] === 'Stylo Bille (Bic)' && $r['__image_url'] === 'https://img/s.jpg', 'résultat : ' . json_encode($r));
+	check($r['name'] === 'Stylo Bille (Bic)' && $r['__image_url'] === '', 'résultat : ' . json_encode($r));
 	foreach ([GTIN, UPCDB, USDA] as $h) { check(!in_array($h, $http->Calls), "$h appelé sans clé"); }
 });
 
@@ -113,7 +115,7 @@ test('T7 pannes partout (délai, 500, JSON invalide, 429, erreur 5) : null, aucu
 	$http->Routes[USDA] = new Response(500, [], '');
 	$http->Routes[UPCITEM] = json(['code' => 'TOO_FAST'], 429);
 	check(plugin($http, ALL_KEYS)->Lookup('3000000000007') === null, 'résultat non nul');
-	check(count($logs) >= 6, 'journal : ' . count($logs));
+	check(count($logs) === 7, 'journal : ' . count($logs));
 });
 
 test('T7b pannes au niveau 1 mais UPCitemdb trouve', function () {
@@ -175,6 +177,62 @@ test('T15 réponse inattendue : types bizarres, HTML, nom très long', function 
 	$r = plugin($http)->Lookup('3000000000015');
 	check(str_starts_with($r['name'], 'Gel douche xxx'), 'nettoyage : ' . substr($r['name'], 0, 30));
 	check(mb_strlen($r['name']) <= 200, 'longueur ' . mb_strlen($r['name']));
+});
+
+test('T16 budget de 12 s : délai de chaque requête borné, sources restantes sautées', function () {
+	global $clock;
+	$clock = 0.0;
+	$timeouts = [];
+	$slow = function ($request) use (&$timeouts) { return new Response(404, [], ''); };
+	$http = new FakeHttp();
+	foreach ([GTIN, UPCDB, USDA, UPCITEM] as $h) {
+		$http->Routes[$h] = function ($request, $options = []) use ($h, &$timeouts) { global $clock; $timeouts[$h] = $options['timeout'] ?? null; $clock += 4.5; return new Response(404, [], "error=1\n"); };
+	}
+	$plugin = plugin($http, ALL_KEYS);
+	MultiSourceBarcodeLookupPlugin::$Clock = function () { global $clock; return $clock; };
+	check($plugin->Lookup('3000000000016') === null, 'non nul');
+	check(!in_array(UPCITEM, $http->Calls), 'UPCitemdb appelée après le budget : ' . implode(',', $http->Calls));
+	check(($timeouts[USDA] ?? 99) <= 3.0 + 1e-9, 'délai USDA non borné : ' . var_export($timeouts[USDA] ?? null, true));
+	check(($timeouts[GTIN] ?? 99) <= 4.0, 'délai Open EAN : ' . var_export($timeouts[GTIN] ?? null, true));
+});
+
+test('T17 images : seules les images des bases Open … Facts (jpg/png/webp/gif) sont transmises', function () {
+	$cases = [
+		'https://images.openfoodfacts.org/images/products/301/762/042/2003/front_fr.jpg' => true,
+		'https://images.openbeautyfacts.org/images/products/x/front.png' => true,
+		'https://evil.example/images.openfoodfacts.org/x.jpg' => false,
+		'https://images.openfoodfacts.org.evil.example/x.jpg' => false,
+		'https://images.openfoodfacts.org/images/x.php' => false,
+		'https://images.openfoodfacts.org/images/x.jpg?.php' => false,
+	];
+	foreach ($cases as $url => $accepted) {
+		$http = new FakeHttp();
+		$http->Routes[OFF] = offFound(['product_name' => 'Produit', 'image_front_url' => $url]);
+		$r = plugin($http)->Lookup('3000000000017');
+		check(($r['__image_url'] === $url) === $accepted, "$url : " . $r['__image_url']);
+	}
+	$http = new FakeHttp();
+	$http->Routes[UPCITEM] = json(['code' => 'OK', 'items' => [['title' => 'Objet', 'images' => ['https://images.openfoodfacts.org/x.jpg']]]]);
+	check(plugin($http)->Lookup('3000000000018')['__image_url'] === '', 'image UPCitemdb transmise');
+});
+
+test('T18 contenance ajoutée au nom (deux formats du même produit = deux noms)', function () {
+	$http = new FakeHttp();
+	$http->Routes[OFF] = offFound(['product_name_fr' => 'Nutella', 'brands' => 'Ferrero', 'quantity' => '750 g']);
+	check(plugin($http)->Lookup('3017620411991')['name'] === 'Nutella (Ferrero) 750 g', 'nom');
+	$http = new FakeHttp();
+	$http->Routes[OFF] = offFound(['product_name_fr' => 'Lait demi-écrémé 1 L', 'brands' => 'Lactel', 'quantity' => '1 l']);
+	check(plugin($http)->Lookup('3000000000019')['name'] === 'Lait demi-écrémé 1 L (Lactel)', 'contenance déjà dans le nom');
+});
+
+test('T19 redirections refusées : option transmise, réponse 301 ignorée', function () {
+	$seen = [];
+	$http = new FakeHttp();
+	foreach ([OFF, OBF, OPFF, OPF, UPCITEM] as $h) {
+		$http->Routes[$h] = function ($request, $options = []) use (&$seen) { $seen[] = $options['allow_redirects'] ?? 'absent'; return new Response(301, ['Location' => 'https://ailleurs.example/']); };
+	}
+	check(plugin($http)->Lookup('3000000000020') === null, 'non nul');
+	check(count($seen) === 5 && count(array_filter($seen, fn($v) => $v !== false)) === 0, 'allow_redirects : ' . json_encode($seen));
 });
 
 $failed = 0;
